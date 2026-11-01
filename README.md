@@ -27,18 +27,19 @@ python3 nutrition_compare.py rank cheese protein most
 python3 nutrition_compare.py rank cheese price least
 ```
 
-Running with no command starts an interactive prompt. Choose a category when
-the CSV contains more than one, then select one combined ranking choice, such
-as `most protein` or `least price`, from a numbered list of 1–10. Choices cover
-both directions for carbohydrates, protein, fat, fiber, and price. You can also
-start the prompts explicitly with `python3 nutrition_compare.py interactive`.
+Running with no command starts the visual app and opens it in your browser at
+`http://localhost:8765`. Click the hamburger button to open the selection popup,
+choose a category, and select one of the numbered ranking options. Choices cover
+most and least calories, carbohydrates, protein, fat, fiber, and price. Stop the
+server with Ctrl+C. For terminal prompts instead, run
+`python3 nutrition_compare.py interactive`.
 
 Each ranking filters to the requested category, orders products by the chosen
 priority, and displays the value and rank for carbohydrates, protein, fat, fiber,
-and price per 100 g, plus the product's package price. Ties share a rank. The
-other metrics use these defaults:
-lower carbohydrates, fat, and price are better; higher protein and fiber are
-better.
+calories, and price per 100 g, plus the product's package price. Ties share a
+rank. The default metric order is calories, carbohydrates, protein, fat, fiber,
+then price. Other metrics use these defaults: lower calories, carbohydrates,
+fat, and price are better; higher protein and fiber are better.
 
 To use another CSV, pass `--csv` before the command:
 

@@ -1,12 +1,16 @@
 import contextlib
 import csv
 import io
+import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import urlopen
 from unittest.mock import patch
 
-from nutrition_compare import main
+from nutrition_compare import create_web_server, main
 
 
 HEADERS = [
@@ -125,6 +129,7 @@ class NutritionCompareTests(unittest.TestCase):
         header = result.splitlines()[1]
         metric_columns = [
             header.index("Protein"),
+            header.index("Calories"),
             header.index("Carbohydrates"),
             header.index("Fat"),
             header.index("Fiber"),
@@ -198,15 +203,50 @@ class NutritionCompareTests(unittest.TestCase):
 
     def test_running_without_command_prompts_for_combined_ranking_choice(self):
         output = io.StringIO()
-        with patch("builtins.input", side_effect=["cheese", "3"]):
+        with patch("builtins.input", side_effect=["cheese", "5"]):
             with contextlib.redirect_stdout(output):
-                exit_code = main(self.command())
+                exit_code = main(self.command("interactive"))
 
         self.assertEqual(exit_code, 0)
         self.assertIn("cheese: most Protein", output.getvalue())
-        self.assertIn("1. most carbohydrates\n2. least carbohydrates", output.getvalue())
-        self.assertIn("9. most price\n10. least price", output.getvalue())
+        self.assertIn("1. most calories\n2. least calories", output.getvalue())
+        self.assertIn("3. most carbohydrates\n4. least carbohydrates", output.getvalue())
+        self.assertIn("5. most protein\n6. least protein", output.getvalue())
+        self.assertIn("11. most price\n12. least price", output.getvalue())
         self.assertIn("Prompt: interactive category=cheese priority=protein direction=most", self.log_path.read_text(encoding="utf-8"))
+
+    def test_web_app_serves_clickable_page_and_ranking_api(self):
+        server = create_web_server(
+            self.csv_path,
+            self.log_path,
+            host="127.0.0.1",
+            port=0,
+        )
+        server_thread = threading.Thread(target=server.serve_forever)
+        server_thread.start()
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        try:
+            with urlopen(f"{base_url}/") as response:
+                page = response.read().decode("utf-8")
+            self.assertIn('aria-label="Open ranking choices"', page)
+            self.assertIn("selection-dialog", page)
+
+            with urlopen(f"{base_url}/api/options") as response:
+                options = json.load(response)
+            self.assertIn("most calories", options["rankings"])
+            self.assertIn(options["default_category"], {"cheese", "cereal"})
+
+            query = urlencode({"category": "cheese", "ranking": "most protein"})
+            with urlopen(f"{base_url}/api/rank?{query}") as response:
+                ranking = json.load(response)
+            self.assertEqual(ranking["title"], "cheese: most Protein")
+            self.assertIn("Product price / size", ranking["headers"])
+            self.assertTrue(any("Beta" in row for row in ranking["rows"]))
+            self.assertIn("web", self.log_path.read_text(encoding="utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
 
 if __name__ == "__main__":
     unittest.main()

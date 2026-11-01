@@ -1,11 +1,15 @@
 import argparse
 import csv
+import json
 import shlex
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import isfinite
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+import webbrowser
 
 
 NUTRIENTS = {
@@ -19,6 +23,7 @@ NUTRIENTS = {
     "sodium_mg": ("Sodium", "mg"),
 }
 RANKING_METRICS = {
+    "calories": ("calories_kcal", "Calories", "kcal", False),
     "carbohydrates": ("carbohydrate_g", "Carbohydrates", "g", False),
     "protein": ("protein_g", "Protein", "g", True),
     "fat": ("fat_g", "Fat", "g", False),
@@ -171,6 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="path for the prompt and answer history log",
     )
     commands = parser.add_subparsers(dest="command")
+    commands.add_parser("web", help="open the visual web app")
     commands.add_parser("interactive", help="choose a category, metric, and direction interactively")
     commands.add_parser("list", help="list products in the CSV")
 
@@ -207,6 +213,14 @@ def prompt_for_numbered_choice(prompt: str, choices: list[str]) -> str:
         print(f"Enter a number from 1 to {len(choices)}.")
 
 
+def build_ranking_choices() -> list[str]:
+    return [
+        f"{direction} {metric}"
+        for metric in RANKING_METRICS
+        for direction in ("most", "least")
+    ]
+
+
 def get_metric_value(product: Product, metric_key: str) -> float | None:
     if metric_key == "price_per_100g":
         return product.price_per_100g
@@ -237,6 +251,73 @@ def dense_ranks(
             previous_value = value
         ranks[product.name] = current_rank
     return ranks
+
+
+def create_ranking_table(
+    products: list[Product], category: str, priority: str, direction: str
+) -> tuple[str, list[str], list[list[str]]]:
+    category_products = [
+        product for product in products if product.category.casefold() == category.casefold()
+    ]
+    if not category_products:
+        raise ValueError(f"No products found in category: {category}")
+
+    priority_key, priority_label, _, _ = RANKING_METRICS[priority]
+    priority_highest_first = direction == "most"
+    overall_ranks = dense_ranks(
+        category_products, priority_key, priority_highest_first
+    )
+    ranked = sorted(
+        category_products,
+        key=lambda product: (
+            get_metric_value(product, priority_key) is None,
+            (
+                -get_metric_value(product, priority_key)
+                if priority_highest_first
+                else get_metric_value(product, priority_key)
+            )
+            if get_metric_value(product, priority_key) is not None
+            else 0,
+            product.name.casefold(),
+        ),
+    )
+
+    metric_ranks = {}
+    for metric, (key, _, _, preferred_highest) in RANKING_METRICS.items():
+        highest_first = (
+            priority_highest_first if metric == priority else preferred_highest
+        )
+        metric_ranks[metric] = dense_ranks(category_products, key, highest_first)
+
+    ordered_metrics = [
+        priority,
+        *(metric for metric in RANKING_METRICS if metric != priority),
+    ]
+    rows = []
+    for product in ranked:
+        row = [str(overall_ranks.get(product.name, "NO-Rank")), product.name]
+        for metric in ordered_metrics:
+            key, _, unit, _ = RANKING_METRICS[metric]
+            value = get_metric_value(product, key)
+            if value is None:
+                row.append("null (NO-Rank)")
+                continue
+            formatted_value = (
+                f"{value:.2f}" if metric == "price" else f"{value:g} {unit}"
+            )
+            row.append(f"#{metric_ranks[metric][product.name]} ({formatted_value})")
+        row.append(f"€{product.product_price_eur:.2f}/{product.package_size_g:g}g")
+        rows.append(row)
+
+    headers = [
+        "Priority rank",
+        "Product",
+        *(RANKING_METRICS[metric][1] for metric in ordered_metrics),
+        "Product price / size",
+    ]
+    direction_label = "most" if priority_highest_first else "least"
+    title = f"{category_products[0].category}: {direction_label} {priority_label}"
+    return title, headers, rows
 
 
 def create_answer(args: argparse.Namespace) -> str:
@@ -275,67 +356,9 @@ def create_answer(args: argparse.Namespace) -> str:
         )
         return format_table(["Nutrient", *(product.name for product in selected)], rows)
 
-    category_products = [
-        product for product in products if product.category.casefold() == args.category.casefold()
-    ]
-    if not category_products:
-        raise ValueError(f"No products found in category: {args.category}")
-
-    priority_key, priority_label, _, _ = RANKING_METRICS[args.priority]
-    priority_highest_first = args.direction == "most"
-    overall_ranks = dense_ranks(
-        category_products, priority_key, priority_highest_first
+    title, headers, rows = create_ranking_table(
+        products, args.category, args.priority, args.direction
     )
-    ranked = sorted(
-        category_products,
-        key=lambda product: (
-            get_metric_value(product, priority_key) is None,
-            (
-                -get_metric_value(product, priority_key)
-                if priority_highest_first
-                else get_metric_value(product, priority_key)
-            )
-            if get_metric_value(product, priority_key) is not None
-            else 0,
-            product.name.casefold(),
-        ),
-    )
-
-    metric_ranks = {}
-    for metric, (key, _, _, preferred_highest) in RANKING_METRICS.items():
-        highest_first = (
-            priority_highest_first if metric == args.priority else preferred_highest
-        )
-        metric_ranks[metric] = dense_ranks(category_products, key, highest_first)
-
-    ordered_metrics = [
-        args.priority,
-        *(metric for metric in RANKING_METRICS if metric != args.priority),
-    ]
-    rows = []
-    for product in ranked:
-        row = [str(overall_ranks.get(product.name, "NO-Rank")), product.name]
-        for metric in ordered_metrics:
-            key, _, unit, _ = RANKING_METRICS[metric]
-            value = get_metric_value(product, key)
-            if value is None:
-                row.append("null (NO-Rank)")
-                continue
-            formatted_value = f"{value:.2f}" if metric == "price" else f"{value:g} {unit}"
-            row.append(f"#{metric_ranks[metric][product.name]} ({formatted_value})")
-        row.append(
-            f"€{product.product_price_eur:.2f}/{product.package_size_g:g}g"
-        )
-        rows.append(row)
-
-    headers = [
-        "Priority rank",
-        "Product",
-        *(RANKING_METRICS[metric][1] for metric in ordered_metrics),
-        "Product price / size",
-    ]
-    direction_label = "most" if priority_highest_first else "least"
-    title = f"{category_products[0].category}: {direction_label} {priority_label}"
     return f"{title}\n{format_table(headers, rows)}"
 
 
@@ -343,6 +366,114 @@ def append_history(log_path: Path, prompt: str, answer: str) -> None:
     timestamp = datetime.now(timezone.utc).isoformat()
     with log_path.open("a", encoding="utf-8") as log_file:
         log_file.write(f"[{timestamp}]\nPrompt: {prompt}\nAnswer:\n{answer}\n\n")
+
+
+def create_web_server(
+    csv_path: Path,
+    log_path: Path,
+    host: str = "0.0.0.0",
+    port: int = 8765,
+) -> ThreadingHTTPServer:
+    products = load_products(csv_path)
+    categories = sorted({product.category for product in products}, key=str.casefold)
+    page_path = Path(__file__).with_name("nutrition_app.html")
+
+    class NutritionRequestHandler(BaseHTTPRequestHandler):
+        def send_json(self, status: int, payload: dict) -> None:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:
+            request = urlsplit(self.path)
+            if request.path == "/":
+                try:
+                    data = page_path.read_bytes()
+                except OSError as error:
+                    self.send_json(500, {"error": str(error)})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+
+            if request.path == "/api/options":
+                self.send_json(
+                    200,
+                    {
+                        "categories": categories,
+                        "rankings": build_ranking_choices(),
+                        "default_category": categories[0],
+                        "default_ranking": "most protein",
+                    },
+                )
+                return
+
+            if request.path == "/api/rank":
+                query = parse_qs(request.query)
+                category = query.get("category", [""])[0]
+                ranking = query.get("ranking", [""])[0]
+                if category.casefold() not in {item.casefold() for item in categories}:
+                    self.send_json(400, {"error": "Choose a valid product category."})
+                    return
+                if ranking not in build_ranking_choices():
+                    self.send_json(400, {"error": "Choose a valid ranking option."})
+                    return
+
+                direction, priority = ranking.split(maxsplit=1)
+                try:
+                    title, headers, rows = create_ranking_table(
+                        products, category, priority, direction
+                    )
+                except ValueError as error:
+                    self.send_json(400, {"error": str(error)})
+                    return
+
+                prompt = (
+                    f"web category={category} priority={priority} direction={direction}"
+                )
+                answer = f"{title}\n{format_table(headers, rows)}"
+                try:
+                    append_history(log_path, prompt, answer)
+                except OSError as error:
+                    self.send_json(500, {"error": f"Could not write history log: {error}"})
+                    return
+                self.send_json(
+                    200,
+                    {"title": title, "headers": headers, "rows": rows},
+                )
+                return
+
+            self.send_json(404, {"error": "Not found."})
+
+        def log_message(self, format: str, *args) -> None:
+            return
+
+    return ThreadingHTTPServer((host, port), NutritionRequestHandler)
+
+
+def launch_web_app(csv_path: Path, log_path: Path) -> int:
+    try:
+        server = create_web_server(csv_path, log_path)
+    except (OSError, ValueError) as error:
+        print(f"Could not start nutrition app: {error}", file=sys.stderr)
+        return 1
+
+    url = f"http://localhost:{server.server_port}/"
+    print(f"Nutrition comparison app running at {url}", flush=True)
+    webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
 
 
 def run_interactive(args: argparse.Namespace) -> int:
@@ -358,11 +489,7 @@ def run_interactive(args: argparse.Namespace) -> int:
                 item for item in categories if item.casefold() == selected_category
             )
 
-        ranking_choices = [
-            f"{direction} {metric}"
-            for metric in RANKING_METRICS
-            for direction in ("most", "least")
-        ]
+        ranking_choices = build_ranking_choices()
         selected_ranking = prompt_for_numbered_choice("Choose ranking:", ranking_choices)
         direction, priority = selected_ranking.split(maxsplit=1)
         prompt = (
@@ -396,7 +523,9 @@ def main(argv: list[str] | None = None) -> int:
     requested_args = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(requested_args)
-    if args.command in (None, "interactive"):
+    if args.command is None or args.command == "web":
+        return launch_web_app(args.csv, args.log)
+    if args.command == "interactive":
         return run_interactive(args)
 
     prompt = shlex.join(["nutrition_compare.py", *requested_args])
