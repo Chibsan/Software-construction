@@ -102,6 +102,7 @@
 - [x] T044 Add Open Food Facts provenance, ODbL attribution, API usage-form gate, and nutrition-only source rules to docs and the UI.
 - [x] T045 Add unit coverage for barcode validation, exact-match enforcement, per-100-g nutrient parsing and bounds, missing facts, provenance, idempotent persistence, API usage-form gating, ranking valid Open Food Facts facts, and stop-on-429 behavior.
 - [x] T046 Add a streaming importer for the official Open Food Facts offline export, restricted to exact catalog barcodes and explicit validated per-100-g values; import and verify matching records from the 2026-11-01 export. Live API sync still requires its separate prerequisites.
+- [x] T048 Present products as a compact one-row-per-product list showing name, brand, package size, shop (S-market), primary metric first, and ascending/descending arrows (FR-005a).
 - [ ] T047 **DEFERRED: prices intentionally remain `null` for now.** Do not add price observations or price ingestion unless the user later requests price data.
 
 ## Dependencies and Execution Order
