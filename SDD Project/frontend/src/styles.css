@@ -456,3 +456,9 @@ footer {
     grid-template-areas: "head" "metrics";
   }
 }
+
+@media (max-width: 390px) {
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+}
